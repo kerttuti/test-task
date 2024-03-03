@@ -1,0 +1,135 @@
+---
+title: "Pipedrive test task"
+author: "Kerttu Tilk"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+```{r include=FALSE}
+
+# functions to install these R packages
+
+# install.packages("data.table") 
+# install.packages("dplyr")
+# install.packages("modeest")
+# install.packages("knitr")
+# install.packages("kableExtra")
+
+# loading mentioned R packages
+library(data.table)
+library(dplyr)
+library(modeest)
+library(knitr)
+library(kableExtra)
+
+# reading the .csv files
+# encoding = "Latin-1" ensures that the special characters are visible
+users <- fread("BX-Users.csv", header = TRUE, sep=";", encoding="Latin-1")
+books <- fread("BX-Books.csv", header = TRUE, sep = ";", encoding="Latin-1")
+ratings <- fread("BX-Book-Ratings.csv", header = TRUE, sep = ";", encoding="Latin-1")
+
+# changing the column names of users, books and ratings for easier access
+colnames(users) <- c("User_ID", "Location", "Age")
+colnames(books) <- c("ISBN", "Book_Title", "Book_Author", "Year_Of_Publication", "Publisher", "Image_URL_S", "Image_URL_M", "Image_URL_L")
+colnames(ratings) <- c("User_ID", "ISBN", "Book_Rating")
+
+```
+
+### Find the mean, median, mode, and range for the *number of ratings* made for books. 
+
+To get started, I first needed to find a way to read the .csv files. I opted to not specify the URL or path for the fread function, so that the code can be run when the .Rmd file and .csv files are in the same folder. I first used the more typical read.csv() function to import the data, but as I started converting some of the columns into the numeric type, I realised there were some issues. I experimented with the read.csv() function and different arguments, but to no avail. I then found the fread function from the data.table package. Fread resolved my issues with escaped quotes (\\") and also converted columns with numeric values (such as User-ID) in to the R numeric type for easier manipulation. Now it was possible to move onto answering the questions.
+
+To compute these characteristics, I first needed to find the number of ratings per book. To do so, I filtered out the implicit ratings (marked as 0). Then I validated the ISBN codes using the BX-Books.csv file, as it was stated that invalid ISBN-s had already been removed from that data set. In more detail, I picked out the rows which ISBN codes were present in the BX-Books.csv data set. I could then count the explicit validated ratings per book/ISBN code and find the mean, median, mode and range of it.
+
+```{r}
+
+# selecting explicit ratings only
+expl_no <- ratings[ratings$Book_Rating != 0]
+
+# validating the expl_ratings ISBN codes by comparing them to the books ISBN codes
+expl_no_valid <- expl_no[expl_no$ISBN %in% books$ISBN, ]
+
+# summing the amount of ratings per book/ISBN code
+sum_no <- expl_no_valid %>% group_by(ISBN) %>% summarize(count=n())
+
+# finding the mean, median, mode and range for the number of ratings made for books
+mean_no <- mean(sum_no$count)
+median_no <- median(sum_no$count)
+mode_no <- mfv(sum_no$count)
+range_no <- c(min(sum_no$count), max(sum_no$count))
+
+# printing the results in a table and using kable_styling to make it look better
+kable(tibble(c("Mean", "Median", "Mode", "Range"), c(round(mean_no, 2), median_no, mode_no, paste(range_no[1],"—",range_no[2],sep=""))), col.names = NULL, caption = "Characteristics of the number of ratings") %>%
+  kable_styling(bootstrap_options = c("bordered"))
+
+```
+### Which book has the highest overall average rating?
+
+I first tried to solve this by finding the mean rating for the explicitly rated and validated books, but that gave about ~20 000 books with the mean rating of 10. I then realised that the average rating should not only take into account the ratings themselves, but also the amount of ratings they have. Otherwise, for example, a book with one rating of 10 will be considered higher rated than a book with forty ratings of 9. I decided to go with the weighted average solution. Meaning I found the mean rating for all the books separately and then multiplied it with the number of ratings and divided by the number of total ratings given overall. 
+
+From there, I could find the ISBN code of the book with the highest weighted average and using the BX-Books.csv data set, find the title and author of said book.
+
+```{r include=FALSE}
+
+# using the explicit ratings with validated ISBN codes again
+# grouping by ISBN codes and finding the mean per ISBN code
+mean_r_books <- expl_no_valid %>% group_by(ISBN) %>% summarize(mean = mean(Book_Rating), count=n())
+
+# finding the total number of ratings
+total_ratings <- length(expl_no_valid$Book_Rating)
+
+# finding the weighted means of the book ratings as average*number of ratings/total number of ratings
+# and adding the column to mean_r_books as well
+mean_r_books$weight_avg <- mean_r_books$mean*mean_r_books$count/total_ratings
+
+# finding which ISBN code has the highest overall rating
+highest_rating <- mean_r_books[mean_r_books$weight_avg == max(mean_r_books$weight_avg), ]
+
+# finding the title and author of said book by the ISBN code
+h_rated_book <- books[books$ISBN == highest_rating$ISBN, c("Book_Title", "Book_Author")]
+
+```
+
+The book that has the highest overall average rating is "`r h_rated_book[1,1]`" by `r h_rated_book[1,2]`.
+
+### How many users have made exactly 2 ratings? 
+
+For this, I also only considered explicit and validated ratings. I grouped the data by User-ID and counted how many times each of the User-IDs occurred, as one row in BX-Book-Ratings.csv represents one rating. I then filtered the  by which User-IDs were in it twice and found the length of it. 
+
+```{r}
+
+# using the explicit ratings with validated ISBN codes again
+# counting the occurrences of User_ID-s in the data set
+count_user_ratings <- expl_no_valid %>% group_by(User_ID) %>% summarize(count=n())
+
+# counting how many users have made exactly 2 ratings
+two_r_count <- length(count_user_ratings$User_ID[count_user_ratings$count == 2])
+
+```
+
+`r two_r_count` users have made exactly 2 ratings.
+
+### If you compare users and ratings, does the Pareto principle hold?
+
+As I understand, the Pareto principle holding in this scenario would mean that about 20% of the entire user base explicitly rate the books. To test this, I found the length of the User-ID column in the BX-Users.csv and made sure they were all unique. I then found how many users had made the explicit ratings for validated ISBN-s/books. Then I found the percentage of raters from all users.
+
+```{r, include = FALSE}
+
+# finding how many users there are in total 
+users_all <- length(users$User_ID) 
+user_all_test <-length(unique(users$User_ID))
+
+# finding how many users made explicitly rated books with validated ISBN codes
+users_rated <- length(unique(expl_no_valid$User_ID)) 
+
+# finding what percentage of users rated from all the users
+users_percent <- round(users_rated/users_all*100, 0) 
+
+```
+
+I found that `r users_percent`% of the entire customer base has explicitly rated books, so yes, the Pareto principle does hold.
+
